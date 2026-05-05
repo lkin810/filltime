@@ -59,7 +59,7 @@
 ## 🚀 快速开始
 
 ```bash
-git clone https://github.com/你的用户名/pixel-fill.git
+git clone https://github.com/lkin810/filltime.git
 cd pixel-fill
 npm install
 npm run dev
