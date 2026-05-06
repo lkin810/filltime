@@ -119,6 +119,7 @@ Supabase JS  2.105.3
 
 ```bash
 # 1. 克隆或进入项目目录
+git clone https://github.com/lkin810/filltime.git
 cd pixel-fill
 
 # 2. 安装依赖
