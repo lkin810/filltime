@@ -1,15 +1,12 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { supabase, hasSupabaseConfig } from './lib/supabase'
-import { applyTheme, THEMES } from './lib/themes'
-import { addSession } from './lib/db'
 
 const useStore = create(
   persist(
     (set, get) => ({
       // 设置
       durationMinutes: 5,
-      theme: 'warm',
 
       // 计时状态
       isRunning: false,
@@ -22,9 +19,12 @@ const useStore = create(
       keepAwake: true,
       notificationEnabled: true,
 
-      // 累计（本地始终是"当前真实数据"）
+      // 累计（本地始终是"当前真实数据"，从 records 聚合）
       completedSessions: 0,
       totalMinutes: 0,
+
+      // 本地详细记录（与云端 records 结构一致）
+      records: [],
 
       // 同步状态
       syncing: false,
@@ -33,6 +33,13 @@ const useStore = create(
       user: null,
       session: null,
       authLoading: true,
+
+      // ===== 工具函数：从 records 聚合统计 =====
+      _calcStats: (records) => {
+        const completedSessions = records.length
+        const totalMinutes = records.reduce((sum, r) => sum + (r.duration || 0), 0)
+        return { completedSessions, totalMinutes }
+      },
 
       // ===== 用户操作 =====
       setAuthLoading: (val) => set({ authLoading: val }),
@@ -56,7 +63,7 @@ const useStore = create(
         const { data, error } = await supabase.auth.signInWithPassword({ email, password })
         if (!error && data.session) {
           set({ user: data.user, session: data.session })
-          await get().loadCloudStats()
+          await get().loadCloudRecords()
         }
         return { data, error }
       },
@@ -81,7 +88,7 @@ const useStore = create(
           const { data: { session } } = await supabase.auth.getSession()
           if (session) {
             set({ user: session.user, session })
-            await get().loadCloudStats()
+            await get().loadCloudRecords()
           }
           set({ authLoading: false })
 
@@ -109,39 +116,58 @@ const useStore = create(
         }
       },
 
-      // ===== 登录时核对本地 ↔ 云端，取最大值 =====
-      loadCloudStats: async () => {
-        const { user, completedSessions, totalMinutes } = get()
+      // ===== 登录时：本地 ↔ 云端合并 records =====
+      loadCloudRecords: async () => {
+        const { user, records: localRecords } = get()
         if (!user || !hasSupabaseConfig) return
 
         try {
-          // 读取云端单条总数
+          // 读取云端单行 records
           const { data, error } = await supabase
-            .from('user_totals')
-            .select('total_count, total_minutes')
+            .from('user_records_json')
+            .select('records')
             .eq('user_id', user.id)
             .single()
 
-          // 如果没数据（空表），云端视为 0
-          const cloudSessions = (error || !data) ? 0 : (data.total_count ?? 0)
-          const cloudMinutes = (error || !data) ? 0 : (data.total_minutes ?? 0)
+          // 云端无数据 → 空数组
+          const cloudRecords = (error || !data) ? [] : (data.records || [])
 
-          // 取最大值合并
-          const mergedSessions = Math.max(completedSessions, cloudSessions)
-          const mergedMinutes = Math.max(totalMinutes, cloudMinutes)
+          // 合并策略：以 id 去重，相同 id 保留最新（云端优先）
+          const mergedMap = new Map()
 
-          // 同步到本地
-          if (mergedSessions !== completedSessions || mergedMinutes !== totalMinutes) {
-            set({ completedSessions: mergedSessions, totalMinutes: mergedMinutes })
+          // 先放本地记录
+          for (const r of localRecords) {
+            if (r.id) mergedMap.set(r.id, r)
           }
 
-          // 如果本地比云端大，回写云端
-          if (mergedSessions > cloudSessions || mergedMinutes > cloudMinutes) {
+          // 云端覆盖（云端为准）
+          for (const r of cloudRecords) {
+            if (r.id) mergedMap.set(r.id, r)
+          }
+
+          const mergedRecords = Array.from(mergedMap.values())
+            .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt))
+
+          // 计算统计
+          const stats = get()._calcStats(mergedRecords)
+
+          // 同步到本地
+          set({
+            records: mergedRecords,
+            completedSessions: stats.completedSessions,
+            totalMinutes: stats.totalMinutes,
+          })
+
+          // 如果本地有云端没有的记录，或者合并后比云端多，回写云端
+          const localIds = new Set(localRecords.map(r => r.id))
+          const cloudIds = new Set(cloudRecords.map(r => r.id))
+          const hasLocalOnly = localRecords.some(r => !cloudIds.has(r.id))
+
+          if (hasLocalOnly || mergedRecords.length > cloudRecords.length) {
             try {
-              await supabase.from('user_totals').upsert({
+              await supabase.from('user_records_json').upsert({
                 user_id: user.id,
-                total_count: mergedSessions,
-                total_minutes: mergedMinutes,
+                records: mergedRecords,
                 updated_at: new Date().toISOString(),
               }, { onConflict: 'user_id' })
             } catch {
@@ -156,7 +182,7 @@ const useStore = create(
       // 手动同步：本地 ↔ 云端合并
       syncStats: async () => {
         set({ syncing: true })
-        await get().loadCloudStats()
+        await get().loadCloudRecords()
         set({ syncing: false })
       },
 
@@ -170,12 +196,6 @@ const useStore = create(
 
       setKeepAwake: (val) => set({ keepAwake: val }),
       setNotificationEnabled: (val) => set({ notificationEnabled: val }),
-      setTheme: (themeId) => {
-        if (THEMES[themeId]) {
-          applyTheme(themeId)
-          set({ theme: themeId })
-        }
-      },
 
       startTimer: () => {
         set({
@@ -219,48 +239,43 @@ const useStore = create(
       },
 
       finishTimer: async () => {
-        const { isRunning, durationMinutes, completedSessions, totalMinutes, theme } = get()
+        const { isRunning, durationMinutes, records, user } = get()
         // 防止重复调用（React 18 并发模式可能导致 useEffect 触发两次）
         if (!isRunning) return
-        const newSessions = completedSessions + 1
-        const newTotal = totalMinutes + durationMinutes
-        // 先更新本地（始终有效）
+
+        // 创建一条完成记录
+        const newRecord = {
+          id: crypto.randomUUID(),
+          duration: durationMinutes,
+          completedAt: new Date().toISOString(),
+        }
+
+        const newRecords = [...records, newRecord]
+        const stats = get()._calcStats(newRecords)
+
+        // 先更新本地
         set({
           isRunning: false,
           isPaused: false,
           isFinished: true,
           startTime: null,
           elapsedMs: durationMinutes * 60 * 1000,
-          completedSessions: newSessions,
-          totalMinutes: newTotal,
+          records: newRecords,
+          completedSessions: stats.completedSessions,
+          totalMinutes: stats.totalMinutes,
         })
 
-        // 写入 IndexedDB 详细记录
-        try {
-          await addSession({
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            date: new Date().toISOString(),
-            duration: durationMinutes,
-            theme: theme,
-            completed: true,
-          })
-        } catch {
-          // IndexedDB 不可用时静默
-        }
-
-        // 已登录 → 直接写云端（单条 UPSERT）
-        const { user } = get()
+        // 已登录 → 直接写云端（整行 upsert）
         if (user && hasSupabaseConfig) {
           try {
-            const { error } = await supabase.from('user_totals').upsert({
+            const { error } = await supabase.from('user_records_json').upsert({
               user_id: user.id,
-              total_count: newSessions,
-              total_minutes: newTotal,
+              records: newRecords,
               updated_at: new Date().toISOString(),
             }, { onConflict: 'user_id' })
             if (error) throw error
           } catch {
-            // 没网也无所谓，下次登录 loadCloudStats 会补上
+            // 没网也无所谓，下次登录 loadCloudRecords 会补上
           }
         }
       },
@@ -273,7 +288,7 @@ const useStore = create(
         durationMinutes: state.durationMinutes,
         keepAwake: state.keepAwake,
         notificationEnabled: state.notificationEnabled,
-        theme: state.theme,
+        records: state.records,
       }),
     }
   )
