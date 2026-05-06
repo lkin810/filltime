@@ -1,0 +1,38 @@
+{
+  "name": "方块时间 - Pixel Fill Timer",
+  "short_name": "方块时间",
+  "description": "像素方块逐渐填满屏幕，可视化你的专注",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fcf7f0",
+  "theme_color": "#e07840",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "开始5分钟专注",
+      "url": "/?duration=5",
+      "description": "快速开始5分钟专注计时"
+    },
+    {
+      "name": "开始25分钟专注",
+      "url": "/?duration=25",
+      "description": "番茄钟25分钟专注计时"
+    }
+  ]
+}

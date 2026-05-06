@@ -2,7 +2,7 @@
 
 /* ===== 设计系统 ===== */
 @theme {
-  /* 暖色主色调 (orange) */
+  /* 暖色主色调 (orange) — 默认主题，运行时通过 JS 覆盖 */
   --color-o: #e07840;
   --color-o2: #d46830;
   --color-o3: #c05828;
@@ -26,6 +26,7 @@
   /* 背景色 */
   --color-bg: #fcf7f0;
   --color-bg2: #f5eee4;
+  --color-surface: #ffffff;
   --color-warm-paper: #ede0d0;
   --color-soft-apricot: #fde8d0;
   --color-paper-mist: #f8f0e8;
@@ -36,6 +37,12 @@
   /* 文字 */
   --color-muted-text: #9a8a78;
   --color-primary: var(--color-o);
+
+  /* 网格线 */
+  --color-grid-line: rgba(212, 200, 184, 0.3);
+
+  /* 像素空格边框 */
+  --color-pixel-empty-border: rgba(212, 200, 184, 0.2);
 
   /* 字体 */
   --font-display: 'Noto Serif SC', 'Epilogue', serif;
@@ -54,9 +61,10 @@ body {
   background-color: var(--color-bg);
   color: var(--color-ink);
   background-image:
-    linear-gradient(rgba(212, 200, 184, 0.3) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(212, 200, 184, 0.3) 1px, transparent 1px);
+    linear-gradient(var(--color-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-grid-line) 1px, transparent 1px);
   background-size: 16px 16px;
+  transition: background-color 0.4s, color 0.4s;
 }
 
 #root {
@@ -116,7 +124,7 @@ button:active {
   border: 2px solid var(--color-border-main);
   border-radius: 2px;
   box-shadow: 4px 4px 0 var(--color-o3);
-  background: white;
+  background: var(--color-surface);
 }
 
 /* ===== 纸张纹理 ===== */
@@ -142,7 +150,7 @@ button:active {
   border-radius: 3px;
 }
 
-/* ===== 方块填充动画 ===== */
+/* ===== 方块填充动画 — 暖橙（默认）===== */
 @keyframes pixel-fade-in {
   0% { opacity: 0; transform: scale(0.5); }
   60% { opacity: 1; transform: scale(1.1); }
@@ -152,10 +160,92 @@ button:active {
   animation: pixel-fade-in 0.25s ease-out;
 }
 
+/* ===== 方块填充动画 — 海浪 ===== */
+@keyframes pixel-wave-in {
+  0% { opacity: 0; transform: translateY(6px) scale(0.8); }
+  60% { opacity: 1; transform: translateY(-1px) scale(1.05); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.pixel-wave-in {
+  animation: pixel-wave-in 0.35s ease-out;
+}
+
+/* ===== 方块填充动画 — 森林 ===== */
+@keyframes pixel-grow-in {
+  0% { opacity: 0; transform: scale(0); }
+  50% { opacity: 1; transform: scale(1.15); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.pixel-grow-in {
+  animation: pixel-grow-in 0.3s ease-out;
+}
+
+/* ===== 方块填充动画 — 星空 ===== */
+@keyframes pixel-twinkle-in {
+  0% { opacity: 0; transform: scale(0.3); filter: brightness(2); }
+  40% { opacity: 1; transform: scale(1.2); filter: brightness(1.5); }
+  100% { opacity: 1; transform: scale(1); filter: brightness(1); }
+}
+.pixel-twinkle-in {
+  animation: pixel-twinkle-in 0.4s ease-out;
+}
+
+/* ===== 庆祝动画 ===== */
 @keyframes pixel-celebrate {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.08); }
 }
 .pixel-celebrate {
   animation: pixel-celebrate 0.5s ease-in-out infinite;
+}
+
+/* ===== 移动端适配 ===== */
+
+/* 安全区域底部 padding（iPhone 刘海屏等） */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 小屏幕下工具栏缩小 */
+@media (max-width: 640px) {
+  /* 移动端按钮更紧凑 */
+  .pixel-button-primary {
+    box-shadow: 2px 2px 0 var(--color-o3);
+  }
+  .pixel-button-primary:active {
+    transform: translate(1px, 1px);
+    box-shadow: 1px 1px 0 var(--color-o3);
+  }
+  .pixel-card {
+    box-shadow: 3px 3px 0 var(--color-o3);
+    border-radius: 2px;
+  }
+  /* 移动端卡片底部圆角 */
+  .rounded-t-2px {
+    border-radius: 2px 2px 0 0;
+  }
+  /* 移动端输入框优化 */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    opacity: 1;
+  }
+  /* 移动端范围滑块 */
+  input[type="range"] {
+    height: 6px;
+  }
+}
+
+/* 防止 iOS 弹性滚动导致页面跳动 */
+@media (max-width: 640px) {
+  body {
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* 大屏幕保持居中布局 */
+@media (min-width: 641px) {
+  .md\:rounded-2px {
+    border-radius: 2px;
+  }
 }

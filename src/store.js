@@ -1,12 +1,15 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { supabase, hasSupabaseConfig } from './lib/supabase'
+import { applyTheme, THEMES } from './lib/themes'
+import { addSession } from './lib/db'
 
 const useStore = create(
   persist(
     (set, get) => ({
       // 设置
       durationMinutes: 5,
+      theme: 'warm',
 
       // 计时状态
       isRunning: false,
@@ -19,7 +22,7 @@ const useStore = create(
       keepAwake: true,
       notificationEnabled: true,
 
-      // 累计（本地始终是"当前真实数据"，从 records 聚合）
+      // 累计（从 records 聚合）
       completedSessions: 0,
       totalMinutes: 0,
 
@@ -129,8 +132,14 @@ const useStore = create(
             .eq('user_id', user.id)
             .single()
 
+          if (error) {
+            console.error('❌ 读取云端失败:', error)
+            return
+          }
+
           // 云端无数据 → 空数组
           const cloudRecords = (error || !data) ? [] : (data.records || [])
+          console.log('📡 云端记录:', cloudRecords.length, '条 | 本地记录:', localRecords.length, '条')
 
           // 合并策略：以 id 去重，相同 id 保留最新（云端优先）
           const mergedMap = new Map()
@@ -165,17 +174,22 @@ const useStore = create(
 
           if (hasLocalOnly || mergedRecords.length > cloudRecords.length) {
             try {
-              await supabase.from('user_records_json').upsert({
+              const { error: upsertError } = await supabase.from('user_records_json').upsert({
                 user_id: user.id,
                 records: mergedRecords,
                 updated_at: new Date().toISOString(),
               }, { onConflict: 'user_id' })
-            } catch {
-              // 静默
+              if (upsertError) {
+                console.error('❌ 回写云端失败:', upsertError)
+              } else {
+                console.log('✅ 回写云端成功')
+              }
+            } catch (e) {
+              console.error('❌ 回写异常:', e)
             }
           }
-        } catch {
-          // 网络错误静默
+        } catch (e) {
+          console.error('❌ 同步异常:', e)
         }
       },
 
@@ -196,6 +210,12 @@ const useStore = create(
 
       setKeepAwake: (val) => set({ keepAwake: val }),
       setNotificationEnabled: (val) => set({ notificationEnabled: val }),
+      setTheme: (themeId) => {
+        if (THEMES[themeId]) {
+          applyTheme(themeId)
+          set({ theme: themeId })
+        }
+      },
 
       startTimer: () => {
         set({
@@ -239,15 +259,16 @@ const useStore = create(
       },
 
       finishTimer: async () => {
-        const { isRunning, durationMinutes, records, user } = get()
+        const { isRunning, durationMinutes, records, theme } = get()
         // 防止重复调用（React 18 并发模式可能导致 useEffect 触发两次）
         if (!isRunning) return
 
-        // 创建一条完成记录
+        // 创建一条完成记录（云端同步用）
         const newRecord = {
           id: crypto.randomUUID(),
           duration: durationMinutes,
           completedAt: new Date().toISOString(),
+          theme: theme,
         }
 
         const newRecords = [...records, newRecord]
@@ -265,17 +286,35 @@ const useStore = create(
           totalMinutes: stats.totalMinutes,
         })
 
+        // 写入 IndexedDB 详细记录（本地统计面板用）
+        try {
+          await addSession({
+            id: newRecord.id,
+            date: newRecord.completedAt,
+            duration: durationMinutes,
+            theme: theme,
+            completed: true,
+          })
+        } catch {
+          // IndexedDB 不可用时静默
+        }
+
         // 已登录 → 直接写云端（整行 upsert）
+        const { user } = get()
         if (user && hasSupabaseConfig) {
           try {
-            const { error } = await supabase.from('user_records_json').upsert({
+            const { data, error } = await supabase.from('user_records_json').upsert({
               user_id: user.id,
               records: newRecords,
               updated_at: new Date().toISOString(),
             }, { onConflict: 'user_id' })
-            if (error) throw error
-          } catch {
-            // 没网也无所谓，下次登录 loadCloudRecords 会补上
+            if (error) {
+              console.error('❌ 写入云端失败:', error)
+            } else {
+              console.log('✅ 云端同步成功:', newRecords.length, '条记录')
+            }
+          } catch (e) {
+            console.error('❌ 云端写入异常:', e)
           }
         }
       },
@@ -288,6 +327,7 @@ const useStore = create(
         durationMinutes: state.durationMinutes,
         keepAwake: state.keepAwake,
         notificationEnabled: state.notificationEnabled,
+        theme: state.theme,
         records: state.records,
       }),
     }

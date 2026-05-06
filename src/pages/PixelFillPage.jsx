@@ -1,9 +1,18 @@
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'motion/react'
 import { useStore } from '../store'
+import { THEMES } from '../lib/themes'
+import { NoisePlayer } from '../lib/noise'
+import { getFillOrder, getFilledSet } from '../lib/fillPattern'
 import ToggleSwitch from '../components/ToggleSwitch'
+import ThemeSelector from '../components/ThemeSelector'
+import NoiseSelector from '../components/NoiseSelector'
 import usePiPTimer from '../hooks/usePiPTimer'
+
+// Phase 3: 代码分割 — 懒加载统计面板和烟花效果
+const StatsPanel = lazy(() => import('../components/StatsPanel'))
+const FireworksCanvas = lazy(() => import('../components/FireworksCanvas'))
 
 const PIXEL_SIZE = 28
 const PRESETS = [1, 3, 5, 10, 15, 30]
@@ -11,7 +20,7 @@ const PRESETS = [1, 3, 5, 10, 15, 30]
 export default function PixelFillPage() {
   const {
     durationMinutes, isRunning, isPaused, isFinished,
-    elapsedMs, startTime,
+    elapsedMs, startTime, theme,
     setDuration, startTimer, pauseTimer, resumeTimer,
     resetTimer, finishTimer,
     completedSessions, totalMinutes,
@@ -24,12 +33,44 @@ export default function PixelFillPage() {
 
   const containerRef = useRef(null)
   const wakeLockRef = useRef(null)
+  const noisePlayerRef = useRef(null)
   const [gridDims, setGridDims] = useState({ cols: 0, rows: 0 })
   const [nowTick, setNowTick] = useState(Date.now())
   const [customInput, setCustomInput] = useState('')
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [wakeLockSupported, setWakeLockSupported] = useState(true)
   const [notifSupported, setNotifSupported] = useState(true)
+  const [activeNoise, setActiveNoise] = useState(null)
+  const [noiseVolume, setNoiseVolume] = useState(0.5)
+  const [showStats, setShowStats] = useState(false)
+  const [showFireworks, setShowFireworks] = useState(false)
+
+  // 当前主题的动画类名
+  const currentTheme = THEMES[theme] || THEMES.warm
+  const pixelAnimationClass = currentTheme.pixelAnimation || 'pixel-fade-in'
+
+  // 初始化白噪音播放器
+  useEffect(() => {
+    noisePlayerRef.current = new NoisePlayer()
+    return () => noisePlayerRef.current?.stop()
+  }, [])
+
+  const handleToggleNoise = useCallback((type) => {
+    const player = noisePlayerRef.current
+    if (!player) return
+    if (activeNoise === type) {
+      player.stop()
+      setActiveNoise(null)
+    } else {
+      player.play(type)
+      setActiveNoise(type)
+    }
+  }, [activeNoise])
+
+  const handleNoiseVolume = useCallback((vol) => {
+    setNoiseVolume(vol)
+    noisePlayerRef.current?.setVolume(vol)
+  }, [])
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -45,13 +86,13 @@ export default function PixelFillPage() {
     return () => document.removeEventListener('fullscreenchange', handler)
   }, [])
 
-  // 每 500ms 更新一次时间戳（运行时）；页面恢复可见时立即刷新
+  // 每 500ms 更新一次时间戳
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 500)
     return () => clearInterval(timer)
   }, [])
 
-  // 页面从后台恢复时立即刷新时间，避免计时跳变
+  // 页面从后台恢复时立即刷新时间
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
@@ -62,7 +103,7 @@ export default function PixelFillPage() {
     return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [])
 
-  // 计算网格尺寸（根据容器大小）
+  // 计算网格尺寸
   useEffect(() => {
     const updateGrid = () => {
       if (!containerRef.current) return
@@ -92,7 +133,7 @@ export default function PixelFillPage() {
   // ===== 屏幕常亮（Wake Lock） =====
   const requestWakeLock = useCallback(async () => {
     try {
-      if (wakeLockRef.current) return // 已有锁
+      if (wakeLockRef.current) return
       wakeLockRef.current = await navigator.wakeLock.request('screen')
       wakeLockRef.current.addEventListener('release', () => {
         wakeLockRef.current = null
@@ -107,7 +148,6 @@ export default function PixelFillPage() {
     }
   }, [])
 
-  // 计时运行且开启常亮 → 请求锁；否则释放
   useEffect(() => {
     if (isRunning && keepAwake && wakeLockSupported) {
       requestWakeLock()
@@ -117,7 +157,6 @@ export default function PixelFillPage() {
     return () => releaseWakeLock()
   }, [isRunning, keepAwake, wakeLockSupported, requestWakeLock, releaseWakeLock])
 
-  // 页面可见性变化时重新获取（锁会被浏览器自动释放）
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === 'visible' && isRunning && keepAwake && wakeLockSupported) {
@@ -132,14 +171,12 @@ export default function PixelFillPage() {
   const notifRequested = useRef(false)
   const audioCtxRef = useRef(null)
 
-  // 用 Web Audio API 生成提示音（无需外部文件）
   const playBeep = useCallback(() => {
     try {
       if (!audioCtxRef.current) {
         audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
       }
       const ctx = audioCtxRef.current
-      // 连续两个音调，更明显
       ;[800, 1000].forEach((freq, i) => {
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
@@ -153,35 +190,35 @@ export default function PixelFillPage() {
         osc.start(start)
         osc.stop(start + 0.4)
       })
-    } catch {} // 静默失败，不影响主要功能
+    } catch {}
   }, [])
 
   const sendNotification = useCallback(() => {
-    // 先播放声音（无论通知权限如何）
     playBeep()
-
     if (!('Notification' in window)) return
     if (Notification.permission === 'granted') {
       new Notification('方块时间', {
         body: `完成！专注了 ${durationMinutes} 分钟，所有方块已填满 🎉`,
-        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🧩</text></svg>',
+        icon: '/icon.svg',
         silent: false,
         requireInteraction: true,
       })
     }
   }, [durationMinutes, playBeep])
 
-  // 完成时发通知
   useEffect(() => {
     if (isFinished && notificationEnabled) {
       sendNotification()
+      // 白噪音渐弱停止
+      noisePlayerRef.current?.fadeOutAndStop()
+      setActiveNoise(null)
+      // 触发完成仪式
+      setShowFireworks(true)
     }
   }, [isFinished, notificationEnabled, sendNotification])
 
-  // 点击"开启通知"时主动请求权限
   const handleToggleNotification = useCallback((val) => {
     if (val && 'Notification' in window && Notification.permission === 'denied') {
-      // 浏览器级别已阻止，无法再次请求 → 告诉用户去设置里开启
       alert('通知已被浏览器阻止，请在浏览器地址栏左侧的锁图标 → 网站设置中允许通知。')
       setNotificationEnabled(false)
       return
@@ -205,22 +242,32 @@ export default function PixelFillPage() {
   const totalPixels = gridDims.cols * gridDims.rows
   const filledPixels = Math.floor(progress * totalPixels)
 
-  // 性能优化：用 useMemo 缓存像素数组，仅在依赖变化时重新计算
+  // 根据主题生成填充顺序
+  const fillOrder = useMemo(() => {
+    return getFillOrder(theme, gridDims.cols, gridDims.rows)
+  }, [theme, gridDims.cols, gridDims.rows])
+
+  // 计算当前已填充的像素集合
+  const filledSet = useMemo(() => {
+    return getFilledSet(fillOrder, filledPixels)
+  }, [fillOrder, filledPixels])
+
+  // 像素网格（useMemo 缓存）
   const pixelElements = useMemo(() => {
     if (totalPixels <= 0) return null
     return Array.from({ length: totalPixels }).map((_, i) => {
-      const filled = i >= totalPixels - filledPixels
+      const filled = filledSet.has(i)
       return (
         <div
           key={i}
-          className={filled ? (isFinished ? 'pixel-celebrate' : 'pixel-fade-in') : ''}
+          className={filled ? (isFinished ? 'pixel-celebrate' : pixelAnimationClass) : ''}
           style={{
             width: PIXEL_SIZE,
             height: PIXEL_SIZE,
             backgroundColor: filled ? 'var(--color-o)' : 'transparent',
             border: filled
               ? '1px solid var(--color-o2)'
-              : '1px solid rgba(212, 200, 184, 0.2)',
+              : '1px solid var(--color-pixel-empty-border)',
             transition: 'background-color 0.3s, border-color 0.3s',
             animationDelay: filled && !isFinished ? `${((totalPixels - 1 - i) % 50) * 5}ms` : '0ms',
             animationDuration: '0.25s',
@@ -228,9 +275,8 @@ export default function PixelFillPage() {
         />
       )
     })
-  }, [totalPixels, filledPixels, isFinished])
+  }, [totalPixels, filledSet, isFinished, pixelAnimationClass])
 
-  // 格式化时间
   const formatTime = (ms) => {
     if (isFinished) return '完成!'
     if (ms <= 0) return '0:00'
@@ -239,14 +285,13 @@ export default function PixelFillPage() {
     return `${m}:${String(s).padStart(2, '0')}`
   }
 
-  // 格式化总专注时间
   const formatTotalMinutes = (mins) => {
     const h = Math.floor(mins / 60)
     const m = Math.round(mins % 60)
     return h > 0 ? `${h}h ${m}min` : `${m}min`
   }
 
-  // ===== 悬浮窗（Document Picture-in-Picture） =====
+  // ===== 悬浮窗 =====
   const { pipSupported, openPiP } = usePiPTimer({
     isRunning, isPaused, isFinished,
     remainingMs, progress, durationMinutes,
@@ -256,7 +301,7 @@ export default function PixelFillPage() {
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-bg">
-      {/* ===== 像素网格（铺满全屏） ===== */}
+      {/* ===== 像素网格 ===== */}
       <div ref={containerRef} className="absolute inset-0 flex items-start justify-center">
         {gridDims.cols > 0 && gridDims.rows > 0 && (
           <div
@@ -272,11 +317,22 @@ export default function PixelFillPage() {
         )}
       </div>
 
+      {/* ===== 像素烟花覆盖层 ===== */}
+      {showFireworks && (
+        <Suspense fallback={null}>
+          <FireworksCanvas
+            themeColor={currentTheme['--color-o']}
+            secondaryColor={currentTheme['--color-o4']}
+            accentColor={currentTheme['--color-lav']}
+            onDone={() => setShowFireworks(false)}
+          />
+        </Suspense>
+      )}
+
       {/* ===== 顶部工具栏 ===== */}
       <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
-        {/* 用户信息 */}
         {user ? (
-          <div className="flex items-center gap-2 bg-white border-2 border-border-main px-3 py-1.5">
+          <div className="flex items-center gap-2 bg-surface border-2 border-border-main px-3 py-1.5">
             <span className="text-[11px] font-bold text-o flex items-center gap-1">
               <span className="material-symbols-outlined text-sm">cloud</span>
               已登录
@@ -292,27 +348,36 @@ export default function PixelFillPage() {
         ) : (
           <button
             onClick={() => navigate('/login')}
-            className="flex items-center gap-1.5 bg-white border-2 border-border-main px-3 py-1.5 text-[11px] font-bold text-muted-text hover:text-ink hover:bg-o5 transition-all"
+            className="flex items-center gap-1.5 bg-surface border-2 border-border-main px-3 py-1.5 text-[11px] font-bold text-muted-text hover:text-ink hover:bg-o5 transition-all"
           >
             <span className="material-symbols-outlined text-sm">person</span>
             登录
           </button>
         )}
-        {/* 悬浮窗按钮（仅计时中/暂停时可用，仅 Chrome 116+ 支持） */}
+        {/* 统计按钮 */}
+        <button
+          onClick={() => setShowStats(!showStats)}
+          className={`w-10 h-10 flex items-center justify-center border-2 border-border-main text-ink hover:bg-o5 transition-all ${
+            showStats ? 'bg-o5' : 'bg-surface'
+          }`}
+          title="统计"
+          aria-label="查看统计"
+        >
+          <span className="material-symbols-outlined">bar_chart</span>
+        </button>
         {pipSupported && !isIdle && !isFinished && (
           <button
             onClick={openPiP}
-            className="w-10 h-10 flex items-center justify-center bg-white border-2 border-border-main text-ink hover:bg-o5 transition-all"
+            className="w-10 h-10 flex items-center justify-center bg-surface border-2 border-border-main text-ink hover:bg-o5 transition-all"
             title="迷你悬浮窗"
             aria-label="打开悬浮窗"
           >
             <span className="material-symbols-outlined">picture_in_picture_alt</span>
           </button>
         )}
-        {/* 全屏按钮 */}
         <button
           onClick={toggleFullscreen}
-          className="w-10 h-10 flex items-center justify-center bg-white border-2 border-border-main text-ink hover:bg-o5 transition-all"
+          className="w-10 h-10 flex items-center justify-center bg-surface border-2 border-border-main text-ink hover:bg-o5 transition-all"
           title={isFullscreen ? '退出全屏' : '全屏'}
           aria-label={isFullscreen ? '退出全屏' : '全屏'}
         >
@@ -322,23 +387,27 @@ export default function PixelFillPage() {
         </button>
       </div>
 
-      {/* ===== 浮层控制面板 ===== */}
-      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-4 pointer-events-none">
-        {/* 主卡片 */}
+      {/* ===== 浮层控制面板（桌面：居中 / 移动：底部抽屉） ===== */}
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-4 pointer-events-none md:justify-center justify-end md:pb-0 pb-safe">
         <motion.div
           layout
-          className="pointer-events-auto w-full max-w-md pixel-card p-8 paper-texture space-y-6"
+          className="pointer-events-auto w-full max-w-md pixel-card p-6 md:p-8 paper-texture space-y-4 md:space-y-5
+            md:max-h-[90vh] overflow-y-auto
+            max-h-[80vh] md:rounded-none rounded-t-2px md:rounded-2px"
           style={{ boxShadow: '5px 5px 0 var(--color-o3)' }}
         >
           {/* 标题 */}
           <div className="text-center space-y-1">
-            <h1 className="font-display text-[36px] font-bold leading-none text-ink">
+            <h1 className="font-display text-[28px] md:text-[36px] font-bold leading-none text-ink">
               方块时间
             </h1>
-            <p className="text-[12px] font-medium text-muted-text">
+            <p className="text-[11px] md:text-[12px] font-medium text-muted-text">
               像素方块逐渐填满屏幕，可视化你的专注
             </p>
           </div>
+
+          {/* 主题选择（仅空闲时） */}
+          {isIdle && <ThemeSelector />}
 
           {/* 预设时间（仅空闲时可选） */}
           {isIdle && (
@@ -351,7 +420,7 @@ export default function PixelFillPage() {
                   <button
                     key={m}
                     onClick={() => { setDuration(m); setCustomInput('') }}
-                    className={`px-4 py-2 text-sm font-bold transition-all ${
+                    className={`px-3 md:px-4 py-2 text-sm font-bold transition-all ${
                       durationMinutes === m && customInput === ''
                         ? 'pixel-button-primary'
                         : 'pixel-button-ghost text-ink'
@@ -361,7 +430,6 @@ export default function PixelFillPage() {
                   </button>
                 ))}
               </div>
-              {/* 自定义时间 */}
               <div className="mt-3 flex items-center gap-2">
                 <input
                   type="number"
@@ -375,7 +443,7 @@ export default function PixelFillPage() {
                     const num = parseInt(val, 10)
                     if (num > 0 && num <= 999) setDuration(num)
                   }}
-                  className="w-24 px-3 py-2 text-sm font-bold text-center border-2 border-border-main bg-white"
+                  className="w-24 px-3 py-2 text-sm font-bold text-center border-2 border-border-main bg-surface text-ink"
                 />
                 <span className="text-[12px] font-bold text-muted-text">分钟</span>
               </div>
@@ -384,7 +452,7 @@ export default function PixelFillPage() {
 
           {/* 倒计时 */}
           <div className="text-center">
-            <p className={`font-mono text-[64px] font-bold leading-none tracking-[-0.04em] ${
+            <p className={`font-mono text-[48px] md:text-[64px] font-bold leading-none tracking-[-0.04em] ${
               isFinished ? 'text-sage pixel-celebrate' : 'text-ink'
             }`}>
               {formatTime(remainingMs)}
@@ -420,20 +488,18 @@ export default function PixelFillPage() {
                 开始填充
               </button>
             ) : isFinished ? (
-              <>
-                <button
-                  onClick={resetTimer}
-                  className="col-span-2 pixel-button-primary py-3 text-base"
-                >
-                  <span className="material-symbols-outlined align-middle text-lg mr-1">refresh</span>
-                  再来一次
-                </button>
-              </>
+              <button
+                onClick={resetTimer}
+                className="col-span-2 pixel-button-primary py-3 text-base"
+              >
+                <span className="material-symbols-outlined align-middle text-lg mr-1">refresh</span>
+                再来一次
+              </button>
             ) : (
               <>
                 <button
                   onClick={isRunning ? pauseTimer : resumeTimer}
-                  className="py-3 px-4 font-bold text-base bg-white border-2 border-border-main text-ink hover:bg-o5 transition-all flex items-center justify-center gap-2"
+                  className="py-3 px-4 font-bold text-base bg-surface border-2 border-border-main text-ink hover:bg-o5 transition-all flex items-center justify-center gap-2"
                 >
                   <span className="material-symbols-outlined text-lg text-primary">
                     {isRunning ? 'pause' : 'play_arrow'}
@@ -463,13 +529,12 @@ export default function PixelFillPage() {
                 <p className="text-[9px] font-bold tracking-[0.08em] text-muted-text">累计用时</p>
               </div>
             </div>
-            {/* 手动同步（仅登录后显示） */}
             {user && (
               <div className="flex justify-center pt-1">
                 <button
                   onClick={syncStats}
                   disabled={syncing}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold bg-white border-2 border-border-main text-muted-text hover:text-ink hover:bg-o5 transition-all disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold bg-surface border-2 border-border-main text-muted-text hover:text-ink hover:bg-o5 transition-all disabled:opacity-50"
                 >
                   <span className={`material-symbols-outlined text-sm ${syncing ? 'animate-spin' : ''}`}>
                     sync
@@ -478,6 +543,13 @@ export default function PixelFillPage() {
                 </button>
               </div>
             )}
+            {/* 白噪音 */}
+            <NoiseSelector
+              activeNoise={activeNoise}
+              onToggle={handleToggleNoise}
+              volume={noiseVolume}
+              onVolumeChange={handleNoiseVolume}
+            />
             {/* 功能开关 */}
             <div className="flex justify-center gap-4 pt-1">
               <ToggleSwitch
@@ -513,6 +585,15 @@ export default function PixelFillPage() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* ===== 统计面板（抽屉） ===== */}
+      <AnimatePresence>
+        {showStats && (
+          <Suspense fallback={null}>
+            <StatsPanel onClose={() => setShowStats(false)} />
+          </Suspense>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
