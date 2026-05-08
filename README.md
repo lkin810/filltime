@@ -233,4 +233,4 @@ src/
 
 ## 📄 许可
 
-MIT
+Unlicense
